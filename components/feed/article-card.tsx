@@ -8,6 +8,9 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { Portal } from '@/components/ui/portal';
+import { CommentSection } from '@/components/comments/comment-section';
+import { db } from '@/lib/firebase';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 
 interface ArticleCardProps {
   article: Article;
@@ -17,8 +20,60 @@ export function ArticleCard({ article }: ArticleCardProps) {
   const { user } = useAuth();
   const router = useRouter();
   const [isLiked, setIsLiked] = useState(false);
-  const [likeCount, setLikeCount] = useState(article.like_count);
+  const [likeCount, setLikeCount] = useState(0);
+  const [commentCount, setCommentCount] = useState(0);
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
+  const [isLiking, setIsLiking] = useState(false);
+
+  // Real-time listener for article data (like count, comment count)
+  useEffect(() => {
+    const articleRef = doc(db, 'articles', article.id);
+    
+    const unsubscribe = onSnapshot(
+      articleRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          setLikeCount(data.like_count || 0);
+          setCommentCount(data.comment_count || 0);
+        } else {
+          // Article doesn't exist in Firestore yet, use mock data
+          setLikeCount(article.like_count);
+          setCommentCount(article.comment_count);
+        }
+      },
+      (error) => {
+        console.error('Error listening to article updates:', error);
+        // Fallback to mock data on error
+        setLikeCount(article.like_count);
+        setCommentCount(article.comment_count);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [article.id, article.like_count, article.comment_count]);
+
+  // Real-time listener for user's like status
+  useEffect(() => {
+    if (!user) {
+      setIsLiked(false);
+      return;
+    }
+
+    const likeRef = doc(db, 'articles', article.id, 'likes', user.uid);
+    
+    const unsubscribe = onSnapshot(
+      likeRef,
+      (snapshot) => {
+        setIsLiked(snapshot.exists());
+      },
+      (error) => {
+        console.error('Error listening to like status:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user, article.id]);
 
   // Prevent body scroll when modal is open
   useEffect(() => {
@@ -40,25 +95,58 @@ export function ArticleCard({ article }: ArticleCardProps) {
     Stocks: '#8B5CF6',
   };
 
-  const handleLike = () => {
+  const handleLike = async () => {
     console.log('Like button clicked, user:', user ? 'logged in' : 'not logged in');
     if (!user) {
       setShowAuthPrompt(true);
       console.log('Setting showAuthPrompt to true');
       return;
     }
-    setIsLiked(!isLiked);
-    setLikeCount(isLiked ? likeCount - 1 : likeCount + 1);
+
+    if (isLiking) return; // Prevent double-clicks
+
+    setIsLiking(true);
+
+    try {
+      if (isLiked) {
+        // Unlike
+        const response = await fetch(`/api/articles/${article.id}/like?user_id=${user.uid}`, {
+          method: 'DELETE',
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Unlike error:', errorData);
+          throw new Error(errorData.error || 'Failed to unlike');
+        }
+      } else {
+        // Like
+        const response = await fetch(`/api/articles/${article.id}/like`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: user.uid }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Like error:', errorData);
+          throw new Error(errorData.error || 'Failed to like');
+        }
+      }
+      // Real-time listener will update the UI automatically
+    } catch (error) {
+      console.error('Error toggling like:', error);
+      
+      // Show user-friendly error
+      alert(error instanceof Error ? error.message : 'Failed to update like. Please try again.');
+    } finally {
+      setIsLiking(false);
+    }
   };
 
   const handleComment = () => {
     console.log('Comment button clicked, user:', user ? 'logged in' : 'not logged in');
-    if (!user) {
-      setShowAuthPrompt(true);
-      console.log('Setting showAuthPrompt to true');
-      return;
-    }
-    // TODO: Open comment modal
+    // Comment section will handle auth check internally
   };
 
   return (
@@ -123,20 +211,11 @@ export function ArticleCard({ article }: ArticleCardProps) {
                 <span className="text-[13px] font-medium pointer-events-none">{likeCount}</span>
               </button>
 
-              {/* Comment */}
-              <button 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleComment();
-                }}
-                className="flex items-center gap-1.5 p-3 -m-2 text-[#737373] active:text-[#008751] transition-colors touch-manipulation relative z-10"
-                type="button"
-                style={{ WebkitTapHighlightColor: 'rgba(0, 135, 81, 0.2)' }}
-              >
+              {/* Comment - removed button, just display count */}
+              <div className="flex items-center gap-1.5 p-3 -m-2 text-[#737373]">
                 <MessageCircle className="h-5 w-5 pointer-events-none" />
-                <span className="text-[13px] font-medium pointer-events-none">{article.comment_count}</span>
-              </button>
+                <span className="text-[13px] font-medium pointer-events-none">{commentCount}</span>
+              </div>
 
               {/* Share */}
               <button 
@@ -163,6 +242,13 @@ export function ArticleCard({ article }: ArticleCardProps) {
               <ExternalLink className="h-4 w-4 pointer-events-none" />
             </a>
           </div>
+
+          {/* Comment Section */}
+          <CommentSection
+            articleId={article.id}
+            initialCommentCount={commentCount}
+            onAuthRequired={() => setShowAuthPrompt(true)}
+          />
         </div>
       </article>
 
