@@ -1,27 +1,44 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { MessageCircle, X } from 'lucide-react';
+import { MessageCircle } from 'lucide-react';
 import { Comment } from '@/types/comment';
 import { CommentInput } from './comment-input';
 import { CommentItem } from './comment-item';
 import { useAuth } from '@/lib/auth-context';
 import { db } from '@/lib/firebase';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { 
+  collection, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  addDoc, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  increment, 
+  serverTimestamp,
+  where,
+  getDocs
+} from 'firebase/firestore';
 
 interface CommentSectionProps {
   articleId: string;
   initialCommentCount: number;
   onAuthRequired: () => void;
+  isOpen: boolean;
+  onClose: () => void;
 }
 
 export function CommentSection({
   articleId,
   initialCommentCount,
   onAuthRequired,
+  isOpen,
+  onClose,
 }: CommentSectionProps) {
   const { user } = useAuth();
-  const [isOpen, setIsOpen] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentCount, setCommentCount] = useState(initialCommentCount);
   const [isLoading, setIsLoading] = useState(false);
@@ -55,6 +72,7 @@ export function CommentSection({
 
         const commentTree = buildCommentTree(fetchedComments);
         setComments(commentTree);
+        // Count ALL comments including replies (total documents in collection)
         setCommentCount(fetchedComments.length);
         setIsLoading(false);
       },
@@ -74,20 +92,61 @@ export function CommentSection({
       return;
     }
 
-    const response = await fetch(`/api/articles/${articleId}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text,
+    try {
+      // Validate minimum comment length
+      if (text.trim().length < 3) {
+        throw new Error('Comment must be at least 3 characters long');
+      }
+
+      // Check for duplicate consecutive comments
+      const recentCommentsRef = collection(db, 'articles', articleId, 'comments');
+      const recentQuery = query(
+        recentCommentsRef,
+        where('user_id', '==', user.uid),
+        orderBy('created_at', 'desc')
+      );
+      
+      const recentSnap = await getDocs(recentQuery);
+      if (!recentSnap.empty) {
+        const lastComment = recentSnap.docs[0].data();
+        if (lastComment.text === text.trim()) {
+          throw new Error('Cannot post duplicate comments');
+        }
+      }
+
+      // Get or create article document
+      const articleRef = doc(db, 'articles', articleId);
+      const articleSnap = await getDoc(articleRef);
+      
+      if (!articleSnap.exists()) {
+        // Initialize article with comment_count: 1
+        await setDoc(articleRef, {
+          like_count: 0,
+          comment_count: 1,
+          created_at: serverTimestamp(),
+        }, { merge: true });
+      } else {
+        // Increment comment count
+        await updateDoc(articleRef, {
+          comment_count: increment(1),
+        });
+      }
+
+      // Create comment
+      const commentsRef = collection(db, 'articles', articleId, 'comments');
+      await addDoc(commentsRef, {
+        article_id: articleId,
         user_id: user.uid,
         user_name: user.displayName || user.email?.split('@')[0] || 'Anonymous',
-        user_avatar: user.photoURL,
-      }),
-    });
-
-    if (!response.ok) {
-      const data = await response.json();
-      throw new Error(data.error || 'Failed to post comment');
+        user_avatar: user.photoURL || null,
+        text: text.trim(),
+        parent_comment_id: null,
+        nesting_level: 0,
+        created_at: serverTimestamp(),
+      });
+    } catch (error: any) {
+      console.error('Error posting comment:', error);
+      throw new Error(error.message || 'Failed to post comment');
     }
   };
 
@@ -97,59 +156,82 @@ export function CommentSection({
       return;
     }
 
-    const response = await fetch(`/api/articles/${articleId}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text,
-        parent_comment_id: parentId,
+    try {
+      // Validate minimum comment length
+      if (text.trim().length < 3) {
+        throw new Error('Reply must be at least 3 characters long');
+      }
+
+      // Get parent comment to determine nesting level
+      const parentRef = doc(db, 'articles', articleId, 'comments', parentId);
+      const parentSnap = await getDoc(parentRef);
+      
+      if (!parentSnap.exists()) {
+        throw new Error('Parent comment not found');
+      }
+      
+      const parentData = parentSnap.data();
+      const nesting_level = (parentData.nesting_level || 0) + 1;
+
+      // Enforce 3-level nesting limit
+      if (nesting_level > 2) {
+        throw new Error('Maximum nesting level reached (3 levels)');
+      }
+
+      // Check for duplicate consecutive comments
+      const recentCommentsRef = collection(db, 'articles', articleId, 'comments');
+      const recentQuery = query(
+        recentCommentsRef,
+        where('user_id', '==', user.uid),
+        orderBy('created_at', 'desc')
+      );
+      
+      const recentSnap = await getDocs(recentQuery);
+      if (!recentSnap.empty) {
+        const lastComment = recentSnap.docs[0].data();
+        if (lastComment.text === text.trim()) {
+          throw new Error('Cannot post duplicate comments');
+        }
+      }
+
+      // Increment article comment count
+      const articleRef = doc(db, 'articles', articleId);
+      const articleSnap = await getDoc(articleRef);
+      
+      if (!articleSnap.exists()) {
+        await setDoc(articleRef, {
+          like_count: 0,
+          comment_count: 1,
+          created_at: serverTimestamp(),
+        }, { merge: true });
+      } else {
+        await updateDoc(articleRef, {
+          comment_count: increment(1),
+        });
+      }
+
+      // Create reply
+      const commentsRef = collection(db, 'articles', articleId, 'comments');
+      await addDoc(commentsRef, {
+        article_id: articleId,
         user_id: user.uid,
         user_name: user.displayName || user.email?.split('@')[0] || 'Anonymous',
-        user_avatar: user.photoURL,
-      }),
-    });
-
-    if (!response.ok) {
-      const data = await response.json();
-      throw new Error(data.error || 'Failed to post reply');
+        user_avatar: user.photoURL || null,
+        text: text.trim(),
+        parent_comment_id: parentId,
+        nesting_level,
+        created_at: serverTimestamp(),
+      });
+    } catch (error: any) {
+      console.error('Error posting reply:', error);
+      throw new Error(error.message || 'Failed to post reply');
     }
-  };
-
-  const handleToggle = () => {
-    if (!isOpen && !user) {
-      onAuthRequired();
-      return;
-    }
-    setIsOpen(!isOpen);
   };
 
   return (
-    <div className="border-t border-[#2A2A2A] pt-4">
-      {/* Toggle Button */}
-      <button
-        onClick={handleToggle}
-        className="flex items-center gap-2 text-sm font-medium text-[#A3A3A3] hover:text-white transition-colors touch-manipulation"
-      >
-        {isOpen ? (
-          <>
-            <X className="h-4 w-4" />
-            <span>Hide Comments</span>
-          </>
-        ) : (
-          <>
-            <MessageCircle className="h-4 w-4" />
-            <span>
-              {commentCount === 0
-                ? 'Be the first to comment'
-                : `View ${commentCount} ${commentCount === 1 ? 'comment' : 'comments'}`}
-            </span>
-          </>
-        )}
-      </button>
-
-      {/* Comment Section */}
+    <>
       {isOpen && (
-        <div className="mt-4 space-y-6 animate-fade-in">
+        <div className="border-t border-[#2A2A2A] pt-4 mt-4 space-y-6 animate-fade-in">
           {/* Comment Input */}
           {user && (
             <CommentInput onSubmit={handleCommentSubmit} />
@@ -196,7 +278,7 @@ export function CommentSection({
           )}
         </div>
       )}
-    </div>
+    </>
   );
 }
 

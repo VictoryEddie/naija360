@@ -44,6 +44,21 @@ A modern news aggregation platform with social features, built for Nigerian audi
 
 5. Open [http://localhost:3000](http://localhost:3000)
 
+### Troubleshooting
+
+Having issues? Check these resources:
+
+- **[QUICK-TROUBLESHOOTING.md](./QUICK-TROUBLESHOOTING.md)** - Fast fixes for common issues
+- **[ISSUES-AND-FIXES.md](./ISSUES-AND-FIXES.md)** - Complete database of known issues and solutions
+- **[FIRESTORE_SETUP.md](./FIRESTORE_SETUP.md)** - Firebase/Firestore configuration guide
+
+**Most Common Issues:**
+- 500 API errors → Use client-side Firebase (see ISSUES-AND-FIXES.md)
+- "Query requires index" → Click the link in the error message
+- Wrong initial state → Initialize state with prop value, not default
+
+
+
 ## Project Structure
 
 ```

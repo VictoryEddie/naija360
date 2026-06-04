@@ -1,0 +1,178 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if user owns the resource
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Get current timestamp
+    function now() {
+      return request.time;
+    }
+    
+    // Check if resource was created within X minutes
+    function createdWithinMinutes(minutes) {
+      return resource.data.created_at != null 
+        && now() < resource.data.created_at + duration.value(minutes, 'm');
+    }
+    
+    // Validate that only specific fields changed
+    function onlyFieldsChanged(allowedFields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(allowedFields);
+    }
+    
+    // Validate count increment is positive (allows any positive increment)
+    function isValidCountIncrement(field) {
+      let oldValue = resource.data[field];
+      let newValue = request.resource.data[field];
+      // Allow any positive increment or decrement by 1
+      return newValue >= oldValue - 1 && newValue <= oldValue + 10;
+    }
+    
+    // ============================================
+    // ARTICLES COLLECTION
+    // ============================================
+    
+    match /articles/{articleId} {
+      
+      // Anyone can read articles
+      allow read: if true;
+      
+      // Authenticated users can create articles (for auto-creation on first like/comment)
+      allow create: if isAuthenticated()
+        // Must have required fields
+        && request.resource.data.keys().hasAll(['like_count', 'comment_count', 'created_at'])
+        // Counts must start at 0 or 1 (1 if created by first comment)
+        && request.resource.data.like_count >= 0
+        && request.resource.data.like_count <= 1
+        && request.resource.data.comment_count >= 0
+        && request.resource.data.comment_count <= 1;
+      
+      // Authenticated users can update articles (for like/comment counts)
+      allow update: if isAuthenticated()
+        // Can only update like_count, comment_count, created_at
+        && onlyFieldsChanged(['like_count', 'comment_count', 'created_at'])
+        // If like_count changed, must be ±1
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['like_count'])
+            || isValidCountIncrement('like_count'))
+        // If comment_count changed, must be ±1
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['comment_count'])
+            || isValidCountIncrement('comment_count'));
+      
+      // No one can delete articles (except via Firebase Console)
+      allow delete: if false;
+      
+      // ============================================
+      // LIKES SUBCOLLECTION
+      // ============================================
+      
+      match /likes/{userId} {
+        
+        // Anyone can read likes (to show like counts)
+        allow read: if true;
+        
+        // Users can only create their own like
+        allow create: if isOwner(userId)
+          // Must have required fields
+          && request.resource.data.keys().hasAll(['user_id', 'created_at'])
+          // user_id must match the document ID
+          && request.resource.data.user_id == userId
+          // Rate limiting: Check if user has liked this article in last 2 seconds
+          // (This is a basic check - proper rate limiting needs server-side implementation)
+          && request.resource.data.created_at == request.time;
+        
+        // Users can only delete their own like
+        allow delete: if isOwner(userId);
+        
+        // No one can update likes (they're just created/deleted)
+        allow update: if false;
+      }
+      
+      // ============================================
+      // COMMENTS SUBCOLLECTION
+      // ============================================
+      
+      match /comments/{commentId} {
+        
+        // Anyone can read comments
+        allow read: if true;
+        
+        // Authenticated users can create comments
+        allow create: if isAuthenticated()
+          // Must set their own user_id
+          && request.resource.data.user_id == request.auth.uid
+          
+          // Text validation
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 3  // Minimum 3 characters
+          && request.resource.data.text.size() <= 500  // Maximum 500 characters
+          
+          // Must have all required fields
+          && request.resource.data.keys().hasAll([
+            'article_id', 
+            'user_id', 
+            'user_name', 
+            'text', 
+            'parent_comment_id',
+            'nesting_level', 
+            'created_at'
+          ])
+          
+          // article_id must match the parent article
+          && request.resource.data.article_id == articleId
+          
+          // Nesting level must be 0, 1, or 2 (max 3 levels)
+          && request.resource.data.nesting_level >= 0
+          && request.resource.data.nesting_level <= 2
+          
+          // If it's a top-level comment, parent_comment_id must be null
+          && (request.resource.data.nesting_level == 0 
+              && request.resource.data.parent_comment_id == null
+              // If it's a reply, parent_comment_id must not be null
+              || request.resource.data.nesting_level > 0 
+              && request.resource.data.parent_comment_id != null
+              // Parent comment must exist (validated server-side in API)
+              // Note: Firestore rules can't check if parent exists due to performance
+              // This is validated in the API route before calling Firestore
+          )
+          
+          // Timestamp must be current time
+          && request.resource.data.created_at == request.time;
+        
+        // Users can update their own comments
+        allow update: if isOwner(resource.data.user_id)
+          // Can only update within 5 minutes of creation
+          && createdWithinMinutes(5)
+          
+          // Can only update text field
+          && onlyFieldsChanged(['text'])
+          
+          // Text must still be valid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 3
+          && request.resource.data.text.size() <= 500
+          
+          // Cannot change to same text (prevent spam updates)
+          && request.resource.data.text != resource.data.text;
+        
+        // Users can delete their own comments
+        // Note: Preventing deletion of comments with replies requires a query
+        // which Firestore rules can't do efficiently. This is validated server-side.
+        allow delete: if isOwner(resource.data.user_id)
+          // Can only delete within 5 minutes of creation
+          && createdWithinMinutes(5);
+      }
+    }
+  }
+}

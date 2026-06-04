@@ -1,6 +1,6 @@
 'use client';
 
-import { Heart, MessageCircle, Share2, ExternalLink } from 'lucide-react';
+import { Heart, MessageCircle, ExternalLink } from 'lucide-react';
 import Image from 'next/image';
 import { Article } from '@/types/article';
 import { formatDistanceToNow } from 'date-fns';
@@ -10,20 +10,31 @@ import { useRouter } from 'next/navigation';
 import { Portal } from '@/components/ui/portal';
 import { CommentSection } from '@/components/comments/comment-section';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { 
+  doc, 
+  onSnapshot, 
+  setDoc, 
+  getDoc, 
+  deleteDoc, 
+  updateDoc, 
+  increment, 
+  serverTimestamp 
+} from 'firebase/firestore';
 
 interface ArticleCardProps {
   article: Article;
+  priority?: boolean;
 }
 
-export function ArticleCard({ article }: ArticleCardProps) {
+export function ArticleCard({ article, priority = false }: ArticleCardProps) {
   const { user } = useAuth();
   const router = useRouter();
   const [isLiked, setIsLiked] = useState(false);
-  const [likeCount, setLikeCount] = useState(0);
-  const [commentCount, setCommentCount] = useState(0);
+  const [likeCount, setLikeCount] = useState(article.like_count);
+  const [commentCount, setCommentCount] = useState(article.comment_count);
   const [showAuthPrompt, setShowAuthPrompt] = useState(false);
   const [isLiking, setIsLiking] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
 
   // Real-time listener for article data (like count, comment count)
   useEffect(() => {
@@ -108,29 +119,39 @@ export function ArticleCard({ article }: ArticleCardProps) {
     setIsLiking(true);
 
     try {
-      if (isLiked) {
-        // Unlike
-        const response = await fetch(`/api/articles/${article.id}/like?user_id=${user.uid}`, {
-          method: 'DELETE',
-        });
+      const articleRef = doc(db, 'articles', article.id);
+      const likeRef = doc(db, 'articles', article.id, 'likes', user.uid);
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          console.error('Unlike error:', errorData);
-          throw new Error(errorData.error || 'Failed to unlike');
+      if (isLiked) {
+        // Unlike - remove the like document
+        await deleteDoc(likeRef);
+
+        // Decrement like count
+        const articleSnap = await getDoc(articleRef);
+        if (articleSnap.exists()) {
+          await updateDoc(articleRef, {
+            like_count: increment(-1),
+          });
         }
       } else {
-        // Like
-        const response = await fetch(`/api/articles/${article.id}/like`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: user.uid }),
+        // Like - create the like document
+        await setDoc(likeRef, {
+          user_id: user.uid,
+          created_at: serverTimestamp(),
         });
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          console.error('Like error:', errorData);
-          throw new Error(errorData.error || 'Failed to like');
+        // Increment like count (create article if doesn't exist)
+        const articleSnap = await getDoc(articleRef);
+        if (!articleSnap.exists()) {
+          await setDoc(articleRef, {
+            like_count: 1,
+            comment_count: 0,
+            created_at: serverTimestamp(),
+          }, { merge: true });
+        } else {
+          await updateDoc(articleRef, {
+            like_count: increment(1),
+          });
         }
       }
       // Real-time listener will update the UI automatically
@@ -144,9 +165,12 @@ export function ArticleCard({ article }: ArticleCardProps) {
     }
   };
 
-  const handleComment = () => {
-    console.log('Comment button clicked, user:', user ? 'logged in' : 'not logged in');
-    // Comment section will handle auth check internally
+  const handleToggle = () => {
+    if (!isOpen && !user) {
+      setShowAuthPrompt(true);
+      return;
+    }
+    setIsOpen(!isOpen);
   };
 
   return (
@@ -158,6 +182,7 @@ export function ArticleCard({ article }: ArticleCardProps) {
             src={article.image_url}
             alt={article.title}
             fill
+            priority={priority}
             className="object-cover md:group-hover:scale-105 transition-transform duration-300"
             sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
           />
@@ -211,43 +236,39 @@ export function ArticleCard({ article }: ArticleCardProps) {
                 <span className="text-[13px] font-medium pointer-events-none">{likeCount}</span>
               </button>
 
-              {/* Comment - removed button, just display count */}
-              <div className="flex items-center gap-1.5 p-3 -m-2 text-[#737373]">
-                <MessageCircle className="h-5 w-5 pointer-events-none" />
-                <span className="text-[13px] font-medium pointer-events-none">{commentCount}</span>
-              </div>
-
-              {/* Share */}
-              <button 
+              {/* Comment - clickable to open comment section */}
+              <button
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  handleToggle();
                 }}
-                className="flex items-center gap-1.5 p-3 -m-2 text-[#737373] active:text-[#F59E0B] transition-colors touch-manipulation relative z-10"
+                className="flex items-center gap-1.5 p-3 -m-2 text-[#737373] hover:text-white active:text-white transition-colors group/comment touch-manipulation relative z-10"
                 type="button"
                 style={{ WebkitTapHighlightColor: 'rgba(0, 135, 81, 0.2)' }}
               >
-                <Share2 className="h-5 w-5 pointer-events-none" />
+                <MessageCircle className="h-5 w-5 group-hover/comment:scale-110 transition-transform pointer-events-none" />
+                <span className="text-[13px] font-medium pointer-events-none">{commentCount}</span>
               </button>
             </div>
 
             {/* Read More */}
             <a
-              href={article.external_url}
-              target="_blank"
-              rel="noopener noreferrer"
+              href={`/article/${article.id}`}
               className="flex items-center gap-1 text-[13px] font-semibold text-[#008751] hover:text-[#006B3F] active:text-[#006B3F] transition-colors p-3 -m-2 touch-manipulation relative z-10"
             >
-              <span className="pointer-events-none">Read</span>
+              <span className="pointer-events-none">Read More</span>
               <ExternalLink className="h-4 w-4 pointer-events-none" />
             </a>
           </div>
 
-          {/* Comment Section */}
+          {/* Comment Section - no toggle button, just the section */}
           <CommentSection
             articleId={article.id}
             initialCommentCount={commentCount}
             onAuthRequired={() => setShowAuthPrompt(true)}
+            isOpen={isOpen}
+            onClose={() => setIsOpen(false)}
           />
         </div>
       </article>

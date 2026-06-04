@@ -1,8 +1,36 @@
+'use client';
+
+import { useEffect, useState } from 'react';
 import { Header } from '@/components/navigation/header';
 import { ArticleCard } from '@/components/feed/article-card';
-import { mockArticles } from '@/lib/mock-data';
+import { getArticles, type NewsArticle } from '@/lib/multi-source-news';
 
 export default function Home() {
+  const [articles, setArticles] = useState<NewsArticle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    async function loadArticles() {
+      try {
+        const fetchedArticles = await getArticles();
+        
+        if (fetchedArticles.length === 0) {
+          setError('No articles available. Please check your internet connection.');
+        } else {
+          setArticles(fetchedArticles);
+        }
+      } catch (err) {
+        console.error('Error loading articles:', err);
+        setError('Failed to load news. Please try again later.');
+      } finally {
+        setLoading(false);
+      }
+    }
+    
+    loadArticles();
+  }, []);
+
   return (
     <div className="min-h-screen bg-[#000000]">
       <Header />
@@ -18,25 +46,57 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Feed Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {mockArticles.map((article, index) => (
-            <div 
-              key={article.id} 
-              className="animate-fade-in"
-              style={{ animationDelay: `${index * 50}ms` }}
-            >
-              <ArticleCard article={article} />
+        {/* Loading State */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center py-20">
+            <div className="h-12 w-12 border-4 border-[#008751]/30 border-t-[#008751] rounded-full animate-spin mb-4" />
+            <p className="text-[#A3A3A3] text-lg">Loading Nigerian news...</p>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && !loading && (
+          <div className="text-center py-20">
+            <div className="inline-flex items-center justify-center h-16 w-16 rounded-full bg-[#EF4444]/10 mb-4">
+              <span className="text-[#EF4444] text-2xl">⚠️</span>
             </div>
-          ))}
-        </div>
+            <h2 className="text-2xl font-bold text-white mb-2">Oops!</h2>
+            <p className="text-[#A3A3A3] mb-6">{error}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-6 py-3 bg-[#008751] text-white font-semibold rounded-lg hover:bg-[#006B3F] transition-all"
+            >
+              Try Again
+            </button>
+          </div>
+        )}
+
+        {/* Feed Grid */}
+        {!loading && !error && articles.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {articles.map((article, index) => (
+              <div 
+                key={article.id} 
+                className="animate-fade-in"
+                style={{ animationDelay: `${index * 50}ms` }}
+              >
+                <ArticleCard article={article} priority={index < 3} />
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Load More */}
-        <div className="mt-16 text-center">
-          <button className="px-8 py-3 rounded-lg bg-[#008751] text-white font-semibold hover:bg-[#006B3F] transition-all hover:shadow-[0_4px_12px_rgba(0,135,81,0.3)] hover:-translate-y-0.5 active:translate-y-0">
-            Load More Articles
-          </button>
-        </div>
+        {!loading && !error && articles.length > 0 && (
+          <div className="mt-16 text-center">
+            <p className="text-[#737373] text-sm mb-4">
+              Showing {articles.length} latest Nigerian news articles
+            </p>
+            <p className="text-[#737373] text-xs">
+              Articles refresh every 5 minutes
+            </p>
+          </div>
+        )}
       </main>
 
       {/* Footer */}

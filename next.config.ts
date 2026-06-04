@@ -7,6 +7,11 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: 'images.unsplash.com',
       },
+      // Allow all external image domains for news articles
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
     ],
   },
 };

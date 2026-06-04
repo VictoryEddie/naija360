@@ -36,8 +36,9 @@ export function CommentInput({
     try {
       await onSubmit(text.trim());
       setText('');
-    } catch (err) {
-      setError('Failed to post comment. Please try again.');
+    } catch (err: any) {
+      console.error('Comment submission error:', err);
+      setError(err?.message || 'Failed to post comment. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
